@@ -1,0 +1,104 @@
+{
+  "positive": [
+    {
+      "id": "powershell",
+      "prompt": "Use PowerShell to list the Windows services and return JSON."
+    },
+    {
+      "id": "pwsh",
+      "prompt": "Run this with pwsh.exe and preserve the native exit code."
+    },
+    {
+      "id": "cmd-batch",
+      "prompt": "Write a cmd batch script that calls where.exe."
+    },
+    {
+      "id": "wsl-interop",
+      "prompt": "From WSL, run a Windows executable under /mnt/c and diagnose the interop error."
+    },
+    {
+      "id": "windows-ssh",
+      "prompt": "Use SSH to inspect services on a Windows Server host."
+    },
+    {
+      "id": "registry",
+      "prompt": "Read HKLM:\\SOFTWARE without changing the registry."
+    },
+    {
+      "id": "installer",
+      "prompt": "Check an MSI installer with msiexec.exe on Windows."
+    }
+  ],
+  "old_failure": [
+    {
+      "id": "quoting-parser-regression",
+      "prompt": "Stop making syntax, quoting, and parsing mistakes when running Windows PowerShell commands from WSL."
+    },
+    {
+      "id": "remote-parser-regression",
+      "prompt": "Run a PowerShell command over SSH to a Windows machine without another parser error."
+    }
+  ],
+  "coexistence": [
+    {
+      "id": "plugin-and-standalone-same-name",
+      "prompt": "Use PowerShell to inspect a Windows service.",
+      "plugin_content": "---\nname: run-powershell-safely\ndescription: plugin-owned workflow\n---\n# PLUGIN_AUTHORITATIVE_SENTINEL\nUse the exact plugin context.",
+      "standalone_content": "# STANDALONE_CONFLICT_SENTINEL\nThis content must never be injected."
+    }
+  ],
+  "negative": [
+    {
+      "id": "linux-bash",
+      "prompt": "Write a Bash script to list services on Ubuntu Linux."
+    },
+    {
+      "id": "linux-ssh",
+      "prompt": "Use SSH to inspect an Ubuntu server."
+    },
+    {
+      "id": "browser-window",
+      "prompt": "Resize the browser window and keep the layout responsive."
+    },
+    {
+      "id": "linux-in-wsl",
+      "prompt": "Write a Bash loop in WSL using grep and awk."
+    },
+    {
+      "id": "ordinary-prose",
+      "prompt": "Summarize this README in two sentences."
+    },
+    {
+      "id": "metaphor",
+      "prompt": "Explain the phrase window of opportunity."
+    },
+    {
+      "id": "windows-prose",
+      "prompt": "Write an essay about Windows history."
+    },
+    {
+      "id": "github-title-search-terms-regression",
+      "prompt": "Make the GitHub title more searchable with Windows LLM coding fixes skill WSL terms"
+    },
+    {
+      "id": "readme-title-windows-wsl",
+      "prompt": "Rewrite the README title to emphasize Windows and WSL support."
+    },
+    {
+      "id": "searchable-repository-topics",
+      "prompt": "Suggest searchable repository topics for a Windows and WSL coding skill."
+    },
+    {
+      "id": "headline-description-windows-wsl",
+      "prompt": "Polish the headline and repository description for a Windows and WSL developer skill."
+    },
+    {
+      "id": "outward-copy-github-page",
+      "prompt": "Write outward-facing copy for the Windows and WSL GitHub page."
+    },
+    {
+      "id": "readme-searchable-keywords",
+      "prompt": "Make the README more searchable with Windows and WSL keywords."
+    }
+  ]
+}

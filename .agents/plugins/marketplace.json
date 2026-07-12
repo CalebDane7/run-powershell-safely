@@ -1,0 +1,20 @@
+{
+  "name": "run-powershell-safely",
+  "interface": {
+    "displayName": "Run PowerShell Safely"
+  },
+  "plugins": [
+    {
+      "name": "run-powershell-safely",
+      "source": {
+        "source": "local",
+        "path": "./plugins/run-powershell-safely"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

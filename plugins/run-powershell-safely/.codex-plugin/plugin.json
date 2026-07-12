@@ -1,0 +1,32 @@
+{
+  "name": "run-powershell-safely",
+  "version": "1.0.2",
+  "description": "Run Windows PowerShell, cmd, and native Windows commands reliably from WSL or over SSH.",
+  "author": {
+    "name": "CalebDane7",
+    "url": "https://github.com/CalebDane7"
+  },
+  "homepage": "https://github.com/CalebDane7/run-powershell-safely",
+  "repository": "https://github.com/CalebDane7/run-powershell-safely",
+  "license": "MIT",
+  "keywords": [
+    "windows",
+    "powershell",
+    "wsl",
+    "ssh",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Run PowerShell Safely",
+    "shortDescription": "Reliable Windows commands from WSL or SSH.",
+    "longDescription": "Routes Windows command tasks to a bundled skill for safer quoting, parsing, transport, and result verification.",
+    "developerName": "CalebDane7",
+    "category": "Productivity",
+    "capabilities": [],
+    "websiteURL": "https://github.com/CalebDane7/run-powershell-safely",
+    "defaultPrompt": [
+      "Run this Windows PowerShell task safely."
+    ]
+  }
+}

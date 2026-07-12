@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
+
+# WHY: Local agent runtime state must never enter the reusable public package.
+.ai-controller/
+.tldr/

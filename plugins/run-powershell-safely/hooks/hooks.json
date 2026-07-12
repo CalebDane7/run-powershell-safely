@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/windows_prompt_route.py\"",
+            "commandWindows": "python \"%PLUGIN_ROOT%\\hooks\\windows_prompt_route.py\"",
+            "timeout": 5,
+            "statusMessage": "Checking for a Windows command task"
+          }
+        ]
+      }
+    ]
+  }
+}
