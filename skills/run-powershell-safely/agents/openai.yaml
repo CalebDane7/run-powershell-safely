@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Windows Commands Safely"
+  short_description: "Reliable Windows commands from WSL"
+  default_prompt: "Use $run-powershell-safely to run this Windows PowerShell or cmd task with deterministic quoting, safety checks, and verified results."
