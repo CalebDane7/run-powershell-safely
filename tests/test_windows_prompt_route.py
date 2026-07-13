@@ -174,6 +174,9 @@ class WindowsPromptRouteTests(unittest.TestCase):
             "schedule:",
             'cron: "23 7 * * *"',
             "workflow_dispatch:",
+            "actions/checkout@v7",
+            "actions/setup-node@v6",
+            "actions/setup-python@v6",
             "@openai/codex@latest",
             'mkdir -p "$CODEX_HOME"',
             'codex plugin marketplace add "$GITHUB_WORKSPACE" --json',
@@ -205,7 +208,14 @@ class WindowsPromptRouteTests(unittest.TestCase):
         # which disabled the update monitor without running any test.
         before_steps = workflow.split("    steps:", 1)[0]
         self.assertNotIn("runner.temp", before_steps)
-        for forbidden in ("OPENAI_API_KEY", "CODEX_API_KEY", "secrets."):
+        for forbidden in (
+            "actions/checkout@v4",
+            "actions/setup-node@v4",
+            "actions/setup-python@v5",
+            "OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "secrets.",
+        ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, workflow)
 
