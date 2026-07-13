@@ -191,15 +191,30 @@ class WindowsPromptRouteTests(unittest.TestCase):
             "tests/assert_lifecycle_capture.py",
             "--expect active",
             "--expect silent",
-            "notify-on-failure:",
+            "runs-on: macos-15",
+            "runs-on: macos-15-intel",
+            'test "$(uname -m)" = "arm64"',
+            'test "$(uname -m)" = "x86_64"',
+            "Prove the installed Apple Silicon hook contract",
+            "Prove the installed Intel Mac hook contract",
+            "id: arm_lifecycle",
+            "id: intel_lifecycle",
+            "continue-on-error: true",
+            "report-compatibility-status:",
             "issues: write",
-            "GH_TOKEN: ${{ github.token }}",
-            "needs.latest-codex-plugin-contract.result",
+            "actions/github-script@v9",
+            "UBUNTU_RESULT: ${{ needs.latest-codex-plugin-contract.result }}",
+            "ARM_JOB_RESULT: ${{ needs.macos-arm-contract.result }}",
+            "ARM_LIFECYCLE_RESULT: ${{ needs.macos-arm-contract.outputs.lifecycle-result }}",
+            "INTEL_JOB_RESULT: ${{ needs.macos-intel-contract.result }}",
+            "INTEL_LIFECYCLE_RESULT: ${{ needs.macos-intel-contract.outputs.lifecycle-result }}",
             "Codex latest compatibility check failed",
-            "gh issue list",
-            "gh issue create",
-            "gh issue reopen",
-            "gh issue close",
+            "macOS Codex lifecycle compatibility gap",
+            "Apple Silicon Codex lifecycle compatibility gap",
+            "github.paginate",
+            "github.rest.issues.create",
+            "github.rest.issues.update",
+            "context.runId",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, workflow)
@@ -212,12 +227,44 @@ class WindowsPromptRouteTests(unittest.TestCase):
             "actions/checkout@v4",
             "actions/setup-node@v4",
             "actions/setup-python@v5",
+            "actions/github-script@v7",
+            "runs-on: macos-latest",
             "OPENAI_API_KEY",
             "CODEX_API_KEY",
             "secrets.",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, workflow)
+
+        # WHY: installed-hook support and the upstream full-lifecycle probe are
+        # distinct contracts. A known Mac client failure must not hide an
+        # untested plugin, and supported-job green must not erase the Mac gap.
+        ubuntu_job = workflow.split("  latest-codex-plugin-contract:", 1)[1].split(
+            "  macos-arm-contract:", 1
+        )[0]
+        arm_job = workflow.split("  macos-arm-contract:", 1)[1].split(
+            "  macos-intel-contract:", 1
+        )[0]
+        intel_job = workflow.split("  macos-intel-contract:", 1)[1].split(
+            "  report-compatibility-status:", 1
+        )[0]
+        reporter = workflow.split("  report-compatibility-status:", 1)[1]
+        self.assertIn("runs-on: ubuntu-latest", ubuntu_job)
+        self.assertNotIn("continue-on-error: true", ubuntu_job)
+        self.assertIn("runs-on: macos-15", arm_job)
+        self.assertIn("runs-on: macos-15-intel", intel_job)
+        self.assertEqual(arm_job.count("continue-on-error: true"), 1)
+        self.assertEqual(intel_job.count("continue-on-error: true"), 1)
+        for mac_job in (arm_job, intel_job):
+            self.assertIn("codex plugin list --available --json", mac_job)
+            self.assertIn("codex plugin list --json", mac_job)
+            self.assertIn("WINDOWS COMMAND ROUTE (same-turn bundled context)", mac_job)
+            self.assertIn("test -z \"$OUTPUT\"", mac_job)
+            self.assertIn("python3 -m unittest discover -s tests -v", mac_job)
+        self.assertEqual(workflow.count("codex exec --ephemeral"), 6)
+        self.assertEqual(workflow.count("</dev/null"), 4)
+        self.assertIn("await syncIssue(\n              \"Codex latest compatibility check failed\"", reporter)
+        self.assertIn("await syncIssue(\n              \"macOS Codex lifecycle compatibility gap\"", reporter)
 
     def test_macos_windows_ssh_boundary_is_explicit(self) -> None:
         result = _run_hook(

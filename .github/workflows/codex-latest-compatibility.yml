@@ -158,53 +158,384 @@ jobs:
           python3 tests/assert_lifecycle_capture.py --capture-file "$CAPTURE_FILE" --request-index 0 --expect active
           python3 tests/assert_lifecycle_capture.py --capture-file "$CAPTURE_FILE" --request-index 1 --expect silent
 
-  notify-on-failure:
-    name: Keep one visible compatibility issue
-    needs: latest-codex-plugin-contract
+  macos-arm-contract:
+    runs-on: macos-15
+    timeout-minutes: 10
+    outputs:
+      lifecycle-result: ${{ steps.arm_lifecycle.outcome }}
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out the plugin source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install the current Codex CLI on Apple Silicon
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64"
+          npm install --global --no-audit --no-fund @openai/codex@latest
+          codex --version
+
+      - name: Install and list the plugin on Apple Silicon
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        run: |
+          set -euo pipefail
+          rm -rf "$CODEX_HOME"
+          mkdir -p "$CODEX_HOME"
+
+          codex plugin marketplace add "$GITHUB_WORKSPACE" --json \
+            >"$RUNNER_TEMP/marketplace-add.json"
+          codex plugin list --available --json \
+            >"$RUNNER_TEMP/plugins-available.json"
+          codex plugin add run-powershell-safely@run-powershell-safely --json \
+            >"$RUNNER_TEMP/plugin-install.json"
+          codex plugin list --json >"$RUNNER_TEMP/plugins-installed.json"
+
+          python3 - \
+            "$RUNNER_TEMP/plugins-available.json" \
+            "$RUNNER_TEMP/plugin-install.json" \
+            "$RUNNER_TEMP/plugins-installed.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          available = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          installed = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          listed = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+          manifest = json.loads(
+              Path("plugins/run-powershell-safely/.codex-plugin/plugin.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          plugin_id = "run-powershell-safely@run-powershell-safely"
+          version = manifest["version"]
+
+          assert any(
+              item.get("pluginId") == plugin_id
+              and item.get("version") == version
+              and item.get("installed") is False
+              for item in available.get("available", [])
+          ), available
+          assert installed.get("pluginId") == plugin_id, installed
+          assert installed.get("version") == version, installed
+          assert any(
+              item.get("pluginId") == plugin_id
+              and item.get("version") == version
+              and item.get("installed") is True
+              and item.get("enabled") is True
+              for item in listed.get("installed", [])
+          ), listed
+          PY
+
+      - name: Prove the installed Apple Silicon hook contract
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        run: |
+          set -euo pipefail
+          PLUGIN_ROOT="$(find "$CODEX_HOME/plugins/cache" -type d -path '*/run-powershell-safely/1.0.3' -print -quit)"
+          test -n "$PLUGIN_ROOT"
+          export PLUGIN_ROOT
+          COMMAND="$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$PLUGIN_ROOT/hooks/hooks.json")"
+          printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"ci","turn_id":"windows","prompt":"Run PowerShell Get-Process on this Windows host."}' | sh -c "$COMMAND" >"$RUNNER_TEMP/windows-hook.json"
+          jq -e '.hookSpecificOutput.hookEventName == "UserPromptSubmit" and (.hookSpecificOutput.additionalContext | contains("WINDOWS COMMAND ROUTE (same-turn bundled context)")) and ((.decision // "") != "block")' "$RUNNER_TEMP/windows-hook.json"
+          OUTPUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"ci","turn_id":"linux","prompt":"Explain this Linux shell command."}' | sh -c "$COMMAND")"
+          test -z "$OUTPUT"
+
+      # WHY: package installation and direct installed-hook execution are the
+      # required Mac contract. Keep the current upstream Codex custom-provider
+      # boundary observable without misreporting a plugin regression.
+      - name: Observe the latest Codex Apple Silicon lifecycle
+        id: arm_lifecycle
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        run: |
+          set -euo pipefail
+          CAPTURE_FILE="$RUNNER_TEMP/codex-lifecycle.jsonl"
+          PORT_FILE="$RUNNER_TEMP/codex-lifecycle.port"
+          python3 tests/mock_responses_server.py --capture-file "$CAPTURE_FILE" --port-file "$PORT_FILE" &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in {1..100}; do
+            test -s "$PORT_FILE" && break
+            sleep 0.1
+          done
+          test -s "$PORT_FILE"
+          BASE_URL="http://127.0.0.1:$(tr -d '\r\n' < "$PORT_FILE")/v1"
+          codex exec --ephemeral --skip-git-repo-check --dangerously-bypass-hook-trust -c 'model_provider="route09"' -c 'model_providers.route09.name="Route09 local"' -c "model_providers.route09.base_url=\"$BASE_URL\"" -c 'model_providers.route09.wire_api="responses"' -c 'model_providers.route09.requires_openai_auth=false' -c 'model_providers.route09.supports_websockets=false' "Run PowerShell Get-Process on this Windows host." </dev/null
+          codex exec --ephemeral --skip-git-repo-check --dangerously-bypass-hook-trust -c 'model_provider="route09"' -c 'model_providers.route09.name="Route09 local"' -c "model_providers.route09.base_url=\"$BASE_URL\"" -c 'model_providers.route09.wire_api="responses"' -c 'model_providers.route09.requires_openai_auth=false' -c 'model_providers.route09.supports_websockets=false' "Explain this Linux shell command." </dev/null
+          python3 tests/assert_lifecycle_capture.py --capture-file "$CAPTURE_FILE" --request-index 0 --expect active
+          python3 tests/assert_lifecycle_capture.py --capture-file "$CAPTURE_FILE" --request-index 1 --expect silent
+
+      - name: Run package guards on Apple Silicon
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+          python3 plugins/run-powershell-safely/scripts/validate_package.py
+
+  macos-intel-contract:
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    outputs:
+      lifecycle-result: ${{ steps.intel_lifecycle.outcome }}
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out the plugin source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install the current Codex CLI on Intel Mac
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          npm install --global --no-audit --no-fund @openai/codex@latest
+          codex --version
+
+      - name: Install and list the plugin on Intel Mac
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        run: |
+          set -euo pipefail
+          rm -rf "$CODEX_HOME"
+          mkdir -p "$CODEX_HOME"
+
+          codex plugin marketplace add "$GITHUB_WORKSPACE" --json \
+            >"$RUNNER_TEMP/marketplace-add.json"
+          codex plugin list --available --json \
+            >"$RUNNER_TEMP/plugins-available.json"
+          codex plugin add run-powershell-safely@run-powershell-safely --json \
+            >"$RUNNER_TEMP/plugin-install.json"
+          codex plugin list --json >"$RUNNER_TEMP/plugins-installed.json"
+
+          python3 - \
+            "$RUNNER_TEMP/plugins-available.json" \
+            "$RUNNER_TEMP/plugin-install.json" \
+            "$RUNNER_TEMP/plugins-installed.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          available = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          installed = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          listed = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+          manifest = json.loads(
+              Path("plugins/run-powershell-safely/.codex-plugin/plugin.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          plugin_id = "run-powershell-safely@run-powershell-safely"
+          version = manifest["version"]
+
+          assert any(
+              item.get("pluginId") == plugin_id
+              and item.get("version") == version
+              and item.get("installed") is False
+              for item in available.get("available", [])
+          ), available
+          assert installed.get("pluginId") == plugin_id, installed
+          assert installed.get("version") == version, installed
+          assert any(
+              item.get("pluginId") == plugin_id
+              and item.get("version") == version
+              and item.get("installed") is True
+              and item.get("enabled") is True
+              for item in listed.get("installed", [])
+          ), listed
+          PY
+
+      - name: Prove the installed Intel Mac hook contract
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        run: |
+          set -euo pipefail
+          PLUGIN_ROOT="$(find "$CODEX_HOME/plugins/cache" -type d -path '*/run-powershell-safely/1.0.3' -print -quit)"
+          test -n "$PLUGIN_ROOT"
+          export PLUGIN_ROOT
+          COMMAND="$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$PLUGIN_ROOT/hooks/hooks.json")"
+          printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"ci","turn_id":"windows","prompt":"Run PowerShell Get-Process on this Windows host."}' | sh -c "$COMMAND" >"$RUNNER_TEMP/windows-hook.json"
+          jq -e '.hookSpecificOutput.hookEventName == "UserPromptSubmit" and (.hookSpecificOutput.additionalContext | contains("WINDOWS COMMAND ROUTE (same-turn bundled context)")) and ((.decision // "") != "block")' "$RUNNER_TEMP/windows-hook.json"
+          OUTPUT="$(printf '%s' '{"hook_event_name":"UserPromptSubmit","session_id":"ci","turn_id":"linux","prompt":"Explain this Linux shell command."}' | sh -c "$COMMAND")"
+          test -z "$OUTPUT"
+
+      # WHY: package installation and direct installed-hook execution are the
+      # required Mac contract. Keep the current upstream Codex custom-provider
+      # boundary observable without misreporting a plugin regression.
+      - name: Observe the latest Codex Intel Mac lifecycle
+        id: intel_lifecycle
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        run: |
+          set -euo pipefail
+          CAPTURE_FILE="$RUNNER_TEMP/codex-lifecycle.jsonl"
+          PORT_FILE="$RUNNER_TEMP/codex-lifecycle.port"
+          python3 tests/mock_responses_server.py --capture-file "$CAPTURE_FILE" --port-file "$PORT_FILE" &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in {1..100}; do
+            test -s "$PORT_FILE" && break
+            sleep 0.1
+          done
+          test -s "$PORT_FILE"
+          BASE_URL="http://127.0.0.1:$(tr -d '\r\n' < "$PORT_FILE")/v1"
+          codex exec --ephemeral --skip-git-repo-check --dangerously-bypass-hook-trust -c 'model_provider="route09"' -c 'model_providers.route09.name="Route09 local"' -c "model_providers.route09.base_url=\"$BASE_URL\"" -c 'model_providers.route09.wire_api="responses"' -c 'model_providers.route09.requires_openai_auth=false' -c 'model_providers.route09.supports_websockets=false' "Run PowerShell Get-Process on this Windows host." </dev/null
+          codex exec --ephemeral --skip-git-repo-check --dangerously-bypass-hook-trust -c 'model_provider="route09"' -c 'model_providers.route09.name="Route09 local"' -c "model_providers.route09.base_url=\"$BASE_URL\"" -c 'model_providers.route09.wire_api="responses"' -c 'model_providers.route09.requires_openai_auth=false' -c 'model_providers.route09.supports_websockets=false' "Explain this Linux shell command." </dev/null
+          python3 tests/assert_lifecycle_capture.py --capture-file "$CAPTURE_FILE" --request-index 0 --expect active
+          python3 tests/assert_lifecycle_capture.py --capture-file "$CAPTURE_FILE" --request-index 1 --expect silent
+
+      - name: Run package guards on Intel Mac
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+          python3 plugins/run-powershell-safely/scripts/validate_package.py
+
+  report-compatibility-status:
+    name: Keep compatibility failures visible
+    needs:
+      - latest-codex-plugin-contract
+      - macos-arm-contract
+      - macos-intel-contract
     if: ${{ always() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       issues: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      RESULT: ${{ needs.latest-codex-plugin-contract.result }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Open, update, or resolve the compatibility alert
-        run: |
-          set -euo pipefail
-          TITLE="Codex latest compatibility check failed"
-          ISSUE_MATCH="$(
-            gh issue list --repo "$GH_REPO" --state all --limit 100 \
-              --json number,state,title \
-              --jq '.[] | select(.title == "Codex latest compatibility check failed") | "\(.number) \(.state)"' \
-              | head -n 1
-          )"
-          ISSUE_NUMBER="${ISSUE_MATCH%% *}"
-          ISSUE_STATE="${ISSUE_MATCH#* }"
+      - name: Open, update, or resolve reusable compatibility alerts
+        uses: actions/github-script@v9
+        env:
+          UBUNTU_RESULT: ${{ needs.latest-codex-plugin-contract.result }}
+          ARM_JOB_RESULT: ${{ needs.macos-arm-contract.result }}
+          ARM_LIFECYCLE_RESULT: ${{ needs.macos-arm-contract.outputs.lifecycle-result }}
+          INTEL_JOB_RESULT: ${{ needs.macos-intel-contract.result }}
+          INTEL_LIFECYCLE_RESULT: ${{ needs.macos-intel-contract.outputs.lifecycle-result }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "all",
+              per_page: 100,
+            });
 
-          if [ "$RESULT" = "success" ]; then
-            if [ -n "$ISSUE_MATCH" ] && [ "${ISSUE_STATE^^}" = "OPEN" ]; then
-              gh issue comment "$ISSUE_NUMBER" --repo "$GH_REPO" \
-                --body "Recovered on $GITHUB_SHA. Green run: $RUN_URL"
-              gh issue close "$ISSUE_NUMBER" --repo "$GH_REPO" \
-                --reason completed
-            fi
-            exit 0
-          fi
+            async function syncIssue(title, result, body, aliases = []) {
+              if (result !== "failure" && result !== "success") {
+                core.info(`No issue change for ${title}: ${result}`);
+                return;
+              }
+              const acceptedTitles = new Set([title, ...aliases]);
+              const existing = issues.find(
+                (issue) => acceptedTitles.has(issue.title) && !issue.pull_request,
+              );
+              if (result === "success") {
+                if (existing && (existing.state === "open" || existing.title !== title)) {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: existing.number,
+                    title,
+                    state: "closed",
+                  });
+                }
+                return;
+              }
+              if (existing) {
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: existing.number,
+                  title,
+                  state: "open",
+                  body,
+                });
+              } else {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title,
+                  body,
+                });
+              }
+            }
 
-          printf -v BODY '%s\n\nRun: %s\nCommit: %s\nEvent: %s\nResult: %s\n\n%s' \
-            'The daily credential-free @openai/codex@latest install and real hook lifecycle check failed. The Windows route may need an update.' \
-            "$RUN_URL" "$GITHUB_SHA" "$GITHUB_EVENT_NAME" "$RESULT" \
-            'This issue is reused until a later green run closes it.'
-          if [ -n "$ISSUE_MATCH" ]; then
-            if [ "${ISSUE_STATE^^}" = "CLOSED" ]; then
-              gh issue reopen "$ISSUE_NUMBER" --repo "$GH_REPO"
-            fi
-            gh issue comment "$ISSUE_NUMBER" --repo "$GH_REPO" --body "$BODY"
-          else
-            gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
-          fi
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const requiredResults = [
+              process.env.UBUNTU_RESULT,
+              process.env.ARM_JOB_RESULT,
+              process.env.INTEL_JOB_RESULT,
+            ];
+            const supportedResult = requiredResults.every((result) => result === "success")
+              ? "success"
+              : requiredResults.some((result) => result === "failure")
+                ? "failure"
+                : "unknown";
+            const supportedBody = [
+              "The newest Codex release failed a required Linux lifecycle or installed Mac hook contract.",
+              "",
+              `Latest failed run: ${runUrl}`,
+              `Ubuntu lifecycle job: ${process.env.UBUNTU_RESULT}`,
+              `macOS 15 ARM installed-hook job: ${process.env.ARM_JOB_RESULT}`,
+              `macOS 15 Intel installed-hook job: ${process.env.INTEL_JOB_RESULT}`,
+              "",
+              "The public hook fails open so Codex work can continue while compatibility is repaired.",
+            ].join("\n");
+            await syncIssue(
+              "Codex latest compatibility check failed",
+              supportedResult,
+              supportedBody,
+            );
+
+            const macLifecycleOutcomes = [
+              process.env.ARM_LIFECYCLE_RESULT,
+              process.env.INTEL_LIFECYCLE_RESULT,
+            ];
+            const macLifecycleResult =
+              process.env.ARM_JOB_RESULT === "failure" ||
+              process.env.INTEL_JOB_RESULT === "failure" ||
+              macLifecycleOutcomes.some((result) => result === "failure")
+                ? "failure"
+                : macLifecycleOutcomes.every((result) => result === "success")
+                  ? "success"
+                  : "unknown";
+            const macBody = [
+              "Latest Codex still exits before the credential-free full-lifecycle proof completes on at least one hosted Mac architecture.",
+              "",
+              `Latest probe: ${runUrl}`,
+              `macOS 15 ARM lifecycle outcome: ${process.env.ARM_LIFECYCLE_RESULT}`,
+              `macOS 15 Intel lifecycle outcome: ${process.env.INTEL_LIFECYCLE_RESULT}`,
+              "",
+              "Both installed Mac hook contracts remain required separately. This issue stays open until both full Mac lifecycles pass.",
+            ].join("\n");
+            await syncIssue(
+              "macOS Codex lifecycle compatibility gap",
+              macLifecycleResult,
+              macBody,
+              ["Apple Silicon Codex lifecycle compatibility gap"],
+            );
