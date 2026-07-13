@@ -1,0 +1,149 @@
+name: Codex latest plugin compatibility
+
+on:
+  push:
+    paths:
+      - ".agents/plugins/marketplace.json"
+      - ".github/workflows/codex-latest-compatibility.yml"
+      - "plugins/run-powershell-safely/**"
+      - "tests/**"
+  pull_request:
+    paths:
+      - ".agents/plugins/marketplace.json"
+      - ".github/workflows/codex-latest-compatibility.yml"
+      - "plugins/run-powershell-safely/**"
+      - "tests/**"
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-latest-plugin-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  latest-codex-plugin-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CODEX_HOME: ${{ runner.temp }}/codex-home
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out the plugin source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the current Codex CLI
+        run: npm install --global --no-audit --no-fund @openai/codex@latest
+
+      - name: Verify the current plugin command surface
+        run: |
+          set -euo pipefail
+          codex --version
+          codex plugin marketplace add --help >/dev/null
+          codex plugin add --help >/dev/null
+          codex plugin list --help >/dev/null
+
+      - name: Run source and package guards
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+          python3 plugins/run-powershell-safely/scripts/validate_package.py
+
+      - name: Install and list the local plugin without account access
+        run: |
+          set -euo pipefail
+          rm -rf "$CODEX_HOME"
+          mkdir -p "$CODEX_HOME"
+
+          codex plugin marketplace add "$GITHUB_WORKSPACE" --json \
+            >"$RUNNER_TEMP/marketplace-add.json"
+          codex plugin list --available --json \
+            >"$RUNNER_TEMP/plugins-available.json"
+          codex plugin add run-powershell-safely@run-powershell-safely --json \
+            >"$RUNNER_TEMP/plugin-install.json"
+          codex plugin list --json >"$RUNNER_TEMP/plugins-installed.json"
+
+          python3 - \
+            "$RUNNER_TEMP/plugins-available.json" \
+            "$RUNNER_TEMP/plugin-install.json" \
+            "$RUNNER_TEMP/plugins-installed.json" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          available = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          installed = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+          listed = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+          manifest = json.loads(
+              Path("plugins/run-powershell-safely/.codex-plugin/plugin.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          plugin_id = "run-powershell-safely@run-powershell-safely"
+          version = manifest["version"]
+
+          assert any(
+              item.get("pluginId") == plugin_id
+              and item.get("version") == version
+              and item.get("installed") is False
+              for item in available.get("available", [])
+          ), available
+          assert installed.get("pluginId") == plugin_id, installed
+          assert installed.get("version") == version, installed
+          assert any(
+              item.get("pluginId") == plugin_id
+              and item.get("version") == version
+              and item.get("installed") is True
+              and item.get("enabled") is True
+              for item in listed.get("installed", [])
+          ), listed
+
+          installed_root = Path(installed["installedPath"])
+          hooks = json.loads(
+              (installed_root / "hooks" / "hooks.json").read_text(encoding="utf-8")
+          )
+          assert set(hooks.get("hooks", {})) == {"UserPromptSubmit"}, hooks
+          handler = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+          assert handler["command"].startswith("python3 -c "), handler
+          assert handler["commandWindows"].startswith('python -c "'), handler
+          assert max(len(handler["command"]), len(handler["commandWindows"])) < 5000
+          assert "exec(" not in handler["command"]
+          assert "timeout=2" in handler["command"]
+          assert "$PLUGIN_ROOT/hooks/windows_prompt_route.py" not in handler["command"]
+          assert "%PLUGIN_ROOT%" not in handler["commandWindows"]
+          PY
+
+      - name: Prove latest Codex executes and injects the Windows hook
+        run: |
+          set -euo pipefail
+          CAPTURE_FILE="$RUNNER_TEMP/codex-lifecycle.jsonl"
+          PORT_FILE="$RUNNER_TEMP/codex-lifecycle.port"
+          python3 tests/mock_responses_server.py --capture-file "$CAPTURE_FILE" --port-file "$PORT_FILE" &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          for _ in {1..100}; do
+            test -s "$PORT_FILE" && break
+            sleep 0.1
+          done
+          test -s "$PORT_FILE"
+          BASE_URL="http://127.0.0.1:$(tr -d '\r\n' < "$PORT_FILE")/v1"
+          codex exec --ephemeral --skip-git-repo-check --dangerously-bypass-hook-trust -c 'model_provider="route09"' -c 'model_providers.route09.name="Route09 local"' -c "model_providers.route09.base_url=\"$BASE_URL\"" -c 'model_providers.route09.wire_api="responses"' -c 'model_providers.route09.requires_openai_auth=false' -c 'model_providers.route09.supports_websockets=false' "Run PowerShell Get-Process on this Windows host."
+          codex exec --ephemeral --skip-git-repo-check --dangerously-bypass-hook-trust -c 'model_provider="route09"' -c 'model_providers.route09.name="Route09 local"' -c "model_providers.route09.base_url=\"$BASE_URL\"" -c 'model_providers.route09.wire_api="responses"' -c 'model_providers.route09.requires_openai_auth=false' -c 'model_providers.route09.supports_websockets=false' "Explain this Linux shell command."
+          python3 tests/assert_lifecycle_capture.py --capture-file "$CAPTURE_FILE" --request-index 0 --expect active
+          python3 tests/assert_lifecycle_capture.py --capture-file "$CAPTURE_FILE" --request-index 1 --expect silent

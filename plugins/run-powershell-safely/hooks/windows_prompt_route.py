@@ -138,22 +138,27 @@ def classify_prompt(prompt: str) -> bool:
     return False
 
 
-def _extract_prompt(payload: Any) -> str:
+def _extract_prompt(payload: Any) -> tuple[str, str | None]:
     if not isinstance(payload, dict):
-        return ""
+        return "", "event_object_invalid"
     for key in ("prompt", "user_prompt"):
         value = payload.get(key)
         if isinstance(value, str):
-            return value
-    return ""
+            return value, None
+    return "", "event_prompt_missing"
 
 
-def _read_payload() -> Any:
+def _read_payload() -> tuple[Any, str | None]:
     try:
         raw = sys.stdin.read()
-        return json.loads(raw) if raw.strip() else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+    except OSError:
+        return {}, "event_read_failed"
+    if not raw.strip():
+        return {}, "event_missing"
+    try:
+        return json.loads(raw), None
+    except json.JSONDecodeError:
+        return {}, "event_json_invalid"
 
 
 def _load_bundled_skill() -> tuple[Path | None, str | None, str | None]:
@@ -196,10 +201,17 @@ def _load_bundled_skill() -> tuple[Path | None, str | None, str | None]:
 def _same_turn_context() -> str:
     skill_path, content, error = _load_bundled_skill()
     if error is not None:
+        # WHY: a stale or incomplete plugin used to label the Windows route as
+        # blocked, which made recoverable hook faults look like a veto. Keep
+        # the turn moving and give Codex the exact repair/fallback boundary.
         return (
-            f"WINDOWS COMMAND ROUTE BLOCKED ({error}): The bundled workflow "
-            "could not be loaded safely. Do not construct or run a Windows "
-            "command until the plugin installation is repaired. This hook "
+            f"WINDOWS COMMAND ROUTING DEGRADED ({error}). Continue the user's "
+            "task; this guidance hook must not prevent the turn from running. "
+            "Before executing a Windows command, repair or reinstall the "
+            "run-powershell-safely plugin, or load a verified standalone "
+            "run-powershell-safely skill and follow it. Keep the target host, "
+            "shell, intent, quoting, execution, and post-state proof separate. "
+            "Do not use encoded or obfuscated command transport. This hook "
             "neither authorizes nor executes commands."
         )
 
@@ -222,19 +234,40 @@ def _same_turn_context() -> str:
     )
 
 
-def main() -> int:
-    prompt = _extract_prompt(_read_payload())
-    if not classify_prompt(prompt):
-        return 0
+def _event_schema_context(error: str) -> str:
+    return (
+        f"WINDOWS COMMAND ROUTING DEGRADED ({error}). Continue the user's "
+        "task; this guidance hook must not prevent the turn from running. "
+        "The hook event did not include a usable prompt, so it cannot decide "
+        "whether the Windows workflow applies. If this is not a Windows "
+        "command task, proceed normally. If it is, repair or update the "
+        "plugin event integration, then load the verified "
+        "run-powershell-safely skill before executing commands. This hook "
+        "neither authorizes nor executes commands."
+    )
 
+
+def _emit_context(context: str) -> None:
     response = {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": _same_turn_context(),
+            "additionalContext": context,
         }
     }
     json.dump(response, sys.stdout, ensure_ascii=False, separators=(",", ":"))
     sys.stdout.write("\n")
+
+
+def main() -> int:
+    payload, event_error = _read_payload()
+    prompt, prompt_error = _extract_prompt(payload)
+    event_error = event_error or prompt_error
+    if event_error is not None:
+        _emit_context(_event_schema_context(event_error))
+        return 0
+    if not classify_prompt(prompt):
+        return 0
+    _emit_context(_same_turn_context())
     return 0
 
 

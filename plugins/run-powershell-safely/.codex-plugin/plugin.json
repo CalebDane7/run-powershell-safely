@@ -1,6 +1,6 @@
 {
   "name": "run-powershell-safely",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Run Windows PowerShell, cmd, and native Windows commands reliably from WSL or over SSH.",
   "author": {
     "name": "CalebDane7",
