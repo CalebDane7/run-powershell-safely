@@ -14,7 +14,9 @@ on:
       - "plugins/run-powershell-safely/**"
       - "tests/**"
   schedule:
-    - cron: "23 7 * * 1"
+    # Daily and off the top of the hour so a Codex release regression is
+    # discovered promptly without GitHub's busiest cron boundary.
+    - cron: "23 7 * * *"
   workflow_dispatch:
 
 permissions:
@@ -29,7 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      CODEX_HOME: ${{ runner.temp }}/codex-home
       PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
@@ -66,6 +67,11 @@ jobs:
           python3 plugins/run-powershell-safely/scripts/validate_package.py
 
       - name: Install and list the local plugin without account access
+        env:
+          # WHY: runner context is valid at step scope, not job-level env.
+          # The old placement caused GitHub to reject the workflow before a
+          # single job could start, silently defeating the update monitor.
+          CODEX_HOME: ${{ runner.temp }}/codex-home
         run: |
           set -euo pipefail
           rm -rf "$CODEX_HOME"
@@ -130,6 +136,8 @@ jobs:
           PY
 
       - name: Prove latest Codex executes and injects the Windows hook
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
         run: |
           set -euo pipefail
           CAPTURE_FILE="$RUNNER_TEMP/codex-lifecycle.jsonl"
@@ -147,3 +155,54 @@ jobs:
           codex exec --ephemeral --skip-git-repo-check --dangerously-bypass-hook-trust -c 'model_provider="route09"' -c 'model_providers.route09.name="Route09 local"' -c "model_providers.route09.base_url=\"$BASE_URL\"" -c 'model_providers.route09.wire_api="responses"' -c 'model_providers.route09.requires_openai_auth=false' -c 'model_providers.route09.supports_websockets=false' "Explain this Linux shell command."
           python3 tests/assert_lifecycle_capture.py --capture-file "$CAPTURE_FILE" --request-index 0 --expect active
           python3 tests/assert_lifecycle_capture.py --capture-file "$CAPTURE_FILE" --request-index 1 --expect silent
+
+  notify-on-failure:
+    name: Keep one visible compatibility issue
+    needs: latest-codex-plugin-contract
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RESULT: ${{ needs.latest-codex-plugin-contract.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open, update, or resolve the compatibility alert
+        run: |
+          set -euo pipefail
+          TITLE="Codex latest compatibility check failed"
+          ISSUE_MATCH="$(
+            gh issue list --repo "$GH_REPO" --state all --limit 100 \
+              --json number,state,title \
+              --jq '.[] | select(.title == "Codex latest compatibility check failed") | "\(.number) \(.state)"' \
+              | head -n 1
+          )"
+          ISSUE_NUMBER="${ISSUE_MATCH%% *}"
+          ISSUE_STATE="${ISSUE_MATCH#* }"
+
+          if [ "$RESULT" = "success" ]; then
+            if [ -n "$ISSUE_MATCH" ] && [ "${ISSUE_STATE^^}" = "OPEN" ]; then
+              gh issue comment "$ISSUE_NUMBER" --repo "$GH_REPO" \
+                --body "Recovered on $GITHUB_SHA. Green run: $RUN_URL"
+              gh issue close "$ISSUE_NUMBER" --repo "$GH_REPO" \
+                --reason completed
+            fi
+            exit 0
+          fi
+
+          printf -v BODY '%s\n\nRun: %s\nCommit: %s\nEvent: %s\nResult: %s\n\n%s' \
+            'The daily credential-free @openai/codex@latest install and real hook lifecycle check failed. The Windows route may need an update.' \
+            "$RUN_URL" "$GITHUB_SHA" "$GITHUB_EVENT_NAME" "$RESULT" \
+            'This issue is reused until a later green run closes it.'
+          if [ -n "$ISSUE_MATCH" ]; then
+            if [ "${ISSUE_STATE^^}" = "CLOSED" ]; then
+              gh issue reopen "$ISSUE_NUMBER" --repo "$GH_REPO"
+            fi
+            gh issue comment "$ISSUE_NUMBER" --repo "$GH_REPO" --body "$BODY"
+          else
+            gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          fi

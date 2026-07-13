@@ -172,6 +172,7 @@ class WindowsPromptRouteTests(unittest.TestCase):
         workflow = COMPATIBILITY_WORKFLOW_PATH.read_text(encoding="utf-8")
         for required in (
             "schedule:",
+            'cron: "23 7 * * *"',
             "workflow_dispatch:",
             "@openai/codex@latest",
             'mkdir -p "$CODEX_HOME"',
@@ -187,9 +188,23 @@ class WindowsPromptRouteTests(unittest.TestCase):
             "tests/assert_lifecycle_capture.py",
             "--expect active",
             "--expect silent",
+            "notify-on-failure:",
+            "issues: write",
+            "GH_TOKEN: ${{ github.token }}",
+            "needs.latest-codex-plugin-contract.result",
+            "Codex latest compatibility check failed",
+            "gh issue list",
+            "gh issue create",
+            "gh issue reopen",
+            "gh issue close",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, workflow)
+        # WHY: runner context is unavailable in job-level env. This exact
+        # placement previously made GitHub reject the workflow with zero jobs,
+        # which disabled the update monitor without running any test.
+        before_steps = workflow.split("    steps:", 1)[0]
+        self.assertNotIn("runner.temp", before_steps)
         for forbidden in ("OPENAI_API_KEY", "CODEX_API_KEY", "secrets."):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, workflow)
